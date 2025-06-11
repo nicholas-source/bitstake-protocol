@@ -179,3 +179,88 @@
     (ok true)
   )
 )
+
+;; Unstake tokens and automatically claim any pending rewards
+(define-public (unstake (amount uint))
+  (let (
+      (stake-info (unwrap! (map-get? stakes { staker: tx-sender }) ERR_NO_STAKE_FOUND))
+      (staked-amount (get amount stake-info))
+      (staked-at (get staked-at stake-info))
+      (stake-duration (- stacks-block-height staked-at))
+    )
+    ;; Validate unstaking conditions
+    (asserts! (> amount u0) ERR_ZERO_STAKE)
+    (asserts! (>= staked-amount amount) ERR_NO_STAKE_FOUND)
+    (asserts! (>= stake-duration (var-get min-stake-period))
+      ERR_TOO_EARLY_TO_UNSTAKE
+    )
+    ;; Claim any pending rewards first
+    (try! (claim-rewards))
+    ;; Update stake record or remove if fully unstaked
+    (if (> staked-amount amount)
+      (map-set stakes { staker: tx-sender } {
+        amount: (- staked-amount amount),
+        staked-at: stacks-block-height,
+      })
+      (map-delete stakes { staker: tx-sender })
+    )
+    ;; Update total staked amount
+    (var-set total-staked (- (var-get total-staked) amount))
+    ;; Transfer unstaked tokens back to user
+    (as-contract (try! (contract-call? 'ST1F7QA2MDF17S807EPA36TSS8AMEFY4KA9TVGWXT.sbtc-token
+      transfer amount (as-contract tx-sender) tx-sender none
+    )))
+    (ok true)
+  )
+)
+
+;; READ-ONLY QUERY FUNCTIONS
+
+;; Get staking information for a specific user
+(define-read-only (get-stake-info (staker principal))
+  (map-get? stakes { staker: staker })
+)
+
+;; Get total rewards claimed by a specific user
+(define-read-only (get-rewards-claimed (staker principal))
+  (map-get? rewards-claimed { staker: staker })
+)
+
+;; Get current reward rate in basis points
+(define-read-only (get-reward-rate)
+  (var-get reward-rate)
+)
+
+;; Get minimum staking period in blocks
+(define-read-only (get-min-stake-period)
+  (var-get min-stake-period)
+)
+
+;; Get total reward pool available
+(define-read-only (get-reward-pool)
+  (var-get reward-pool)
+)
+
+;; Get total amount of sBTC staked in the protocol
+(define-read-only (get-total-staked)
+  (var-get total-staked)
+)
+
+;; Calculate current APY based on reward rate
+(define-read-only (get-current-apy)
+  (let ((rate-basis (var-get reward-rate)))
+    ;; Convert basis points to percentage (e.g., 5 basis points = 0.5%)
+    (* rate-basis u100)
+  )
+)
+
+;; Get protocol statistics summary
+(define-read-only (get-protocol-stats)
+  {
+    total-staked: (var-get total-staked),
+    reward-pool: (var-get reward-pool),
+    reward-rate: (var-get reward-rate),
+    min-stake-period: (var-get min-stake-period),
+    current-apy: (get-current-apy),
+  }
+)
